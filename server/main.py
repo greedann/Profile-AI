@@ -54,3 +54,14 @@ async def list_models():
 async def load_model(req: ModelLoadRequest):
     result = await asyncio.to_thread(model_manager.load_model, req.model_name)
     return ModelLoadResponse(success=result.get("success", False), message=result.get("message"))
+
+
+@app.get("/model/current")
+def get_current_model():
+    """Return the name of currently loaded model"""
+    current = model_manager.get_current_model()
+    return {
+        "models": [
+            current if current else ""
+        ]
+    }

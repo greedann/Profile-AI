@@ -39,6 +39,10 @@ class RealModelBackend(BaseModelBackend):
                         from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
                         from peft import PeftModel
 
+                        # Force GPU memory cleanup before loading
+                        torch.cuda.empty_cache()
+                        torch.cuda.reset_peak_memory_stats()
+
                         bnb_config = BitsAndBytesConfig(
                             load_in_4bit=True,
                             bnb_4bit_quant_type="nf4",
@@ -146,6 +150,8 @@ class RealModelBackend(BaseModelBackend):
         """Unload model to free resources."""
         try:
             import torch
+            import gc
+            
             with cls._init_lock:
                 if cls._model is not None:
                     del cls._model
@@ -153,8 +159,17 @@ class RealModelBackend(BaseModelBackend):
                 if cls._tokenizer is not None:
                     del cls._tokenizer
                     cls._tokenizer = None
+                
                 cls._initialized = False
+                
+                # Force garbage collection
+                gc.collect()
+                
+                # Clear CUDA cache multiple times
                 torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
                 logger.info("Model unloaded and CUDA cache cleared")
         except Exception:
             logger.exception("Error during model unload")
@@ -203,18 +218,33 @@ class ModelManager:
 
         with self._lock:
             try:
-                # unload previous model if RealModelBackend supports it
-                if isinstance(self._current_backend, RealModelBackend):
-                    RealModelBackend.unload_model()
+                # Completely unload previous model BEFORE loading new one
+                if self._current_backend is not None:
+                    if isinstance(self._current_backend, RealModelBackend):
+                        RealModelBackend.unload_model()
+                
+                self._current_backend = None
+                self._current_model_name = None
+                
+                # Longer delay to ensure complete cleanup
+                import time
+                time.sleep(1.0)
 
-                # instantiate new backend (this will initialize class-level model)
+                # Now load the new model
                 backend = RealModelBackend(str(model_path))
                 self._current_backend = backend
                 self._current_model_name = model_name
                 return {"success": True, "message": f"Model '{model_name}' loaded"}
             except Exception as e:
                 logger.exception("Failed to load model %s", model_name)
+                self._current_backend = None
+                self._current_model_name = None
                 return {"success": False, "message": str(e)}
+
+    def get_current_model(self) -> Optional[str]:
+        """Return the name of currently loaded model"""
+        with self._lock:
+            return self._current_model_name
 
     def get_backend(self) -> BaseModelBackend:
         # fallback to dummy if none
